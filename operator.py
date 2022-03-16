@@ -32,6 +32,23 @@ scheduler = sched.scheduler(time.time, time.sleep)
 def gen_key( input ):
         return  "key_" + input.kind + "_"+ input.metadata.namespace + "_" + input.metadata.name
 
+#Terrible O(N) lookup.
+def find_in_sched( obj ):
+    key = gen_key( obj )
+    evt = list( filter(lambda d: "key" in d.kwargs and d.kwargs["key"] == key, scheduler.queue) )
+    if len( evt ) > 0:
+        return evt[0]
+    else:
+        return None
+
+#Another Terrible O(N) remove func
+def remove_from_sched( obj ):
+    evt = find_in_sched( obj )
+    if evt:
+        print( "REMOVED Schedualed evt" )
+        pprint(evt)
+        scheduler.cancel(evt)
+
 #TODO: replace this with a request to the api
 def get_ref_digest( image_str ):
     popen = subprocess.Popen(
@@ -143,6 +160,7 @@ def set_update_status_annotation( client, deploy ):
         }
         
     #TODO: wrap in try execpt
+    print( "Updating Last-Checked" )
     resp = client.AppsV1Api().patch_namespaced_deployment( 
             deploy_name, 
             deploy_ns, 
@@ -173,16 +191,27 @@ def get_last_check( deploy ):
     
     return 0
 
-def get_and_reconsile( kind, namespace, name ):
-    print( f"Scheduled update ts: {time.time()} {kind} {namespace}/{name}")
-    if kind == "Deployment":
+def get_and_reconsile( **args ):
+
+    print( f"Scheduled update ts: {time.time()} {args}")
+
+    if args["kind"] == "Deployment":
         #TODO: Catch exections from removed objeccts
-        obj = client.AppsV1Api().read_namespaced_deployment( name, namespace )
+        obj = client.AppsV1Api().read_namespaced_deployment( args["name"], args["namespace"] )
         if annotation_enable in obj.metadata.annotations and obj.metadata.annotations[annotation_enable].lower() == "true":
             set_update_status_annotation( client, obj )
             check_image_update( client, obj )
             period = get_check_period( obj )
-            scheduler.enter( period , 5, get_and_reconsile, ( kind, namespace, name ) )
+
+            args = { 
+                "kind": obj.kind,
+                "namespace": obj.metadata.namespace,
+                "name": obj.metadata.name,
+                "key": gen_key( obj )
+            }
+
+            scheduler.enter( period , 5, get_and_reconsile, (), kwargs=args )
+
     
 def reconsile_add(obj):
     #this has no side effects
@@ -200,12 +229,18 @@ def reconsile_add(obj):
     else:
         period = period - (now-last)
 
-    kind = obj.kind
-    ns = obj.metadata.namespace
-    name = obj.metadata.name
+    args = { 
+        "kind": obj.kind,
+        "namespace": obj.metadata.namespace,
+        "name": obj.metadata.name,
+        "key": gen_key( obj )
+    }
 
-    
-    scheduler.enter( period , 5, get_and_reconsile, ( kind,ns,name ) )
+
+    scheduler.enter( period , 5, get_and_reconsile, (), args )
+
+def annotation_enable_chk(d):
+    return annotation_enable in d.metadata.annotations and d.metadata.annotations[annotation_enable].lower() == "true"
 
 #when we add more watches https://engineering.bitnami.com/articles/kubernetes-async-watches.html
 def start_controller():
@@ -218,17 +253,15 @@ def start_controller():
         d = event['object']
         key = gen_key( event['object'] )
 
-        if annotation_enable in d.metadata.annotations and d.metadata.annotations[annotation_enable].lower() == "true":
-            if event['type'] in ["ADDED"]:
-                reconsile_add( d )
-            #if DELETED:
-            # remove from sched
+        if annotation_enable_chk(d) and event['type'] == "ADDED":
+            reconsile_add( d )
 
+        #Check if the Annotation was removed, attempt to remove from sched if not enabled.
+        if not annotation_enable_chk(d) and event['type'] == "MODIFIED":
+            remove_from_sched( d )
 
-        if event['type'] in ["MODIFIED"]:
-            pass
-            #TODO check if enable annotation removed.
-
+        if event['type'] == "DELETED":
+            remove_from_sched( d )
 
     sys.exit("Watch failed")
 
@@ -260,7 +293,7 @@ def main():
 
     #HACK: This task just readds its self to the queue to stop the schedular getting empty
     def dummy():
-        scheduler.enter( 60, 10, dummy  )
+        scheduler.enter( 10, 10, dummy  )
     dummy()
 
     sched_thread = threading.Thread(target=scheduler.run, daemon=True)
