@@ -6,15 +6,21 @@ The goal is to eventually have an annotation to link a deployment to a `Imagebui
 ## Annotations
 An example to check regsitery every two hours, for new image version
 
-`image-updater.k8s.tdawson.co.nz/enable: "true"`
-`image-updater.k8s.tdawson.co.nz/period: "3600"` 
-
+```
+image-updater.k8s.tdawson.co.nz/enable: "true"
+image-updater.k8s.tdawson.co.nz/period: "3600"
+```
 
 
 This annotations is set by operator when first run  red_name is from the image propertie of each container this must not be a short name!
 This can also be set by the user to hardcode which image version is used to keep update to date.
 
-`image-updater.k8s.tdawson.co.nz/watch-ref: { "Container-Name": "ref_name", "Container2-name": "ref_name" }`
+```
+image-updater.k8s.tdawson.co.nz/watch-ref: {
+     "Container-Name": "ref_name", 
+     "Container2-name": "ref_name" 
+    }
+```
 
 
 ### TODO:
