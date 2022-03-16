@@ -6,7 +6,6 @@ from kubernetes.leaderelection.resourcelock.configmaplock import ConfigMapLock
 from kubernetes.leaderelection import electionconfig
 
 from docker_registry_client import DockerRegistryClient
-import logging
 from pprint import pprint
 from urllib.parse import urlparse
 import sys
@@ -16,6 +15,7 @@ import uuid
 import sched
 import time
 import threading
+import logging
 
 OP_NAME = "image-updater-operator"
 DEFAULT_PERIOD = int( 3600 )
@@ -52,7 +52,7 @@ def remove_from_sched( obj ):
 #TODO: replace this with a request to the api
 def get_ref_digest( image_str ):
     popen = subprocess.Popen(
-          ( "./skopeo", "--override-os", "linux", "inspect", "--no-tags", "--no-creds", "docker://"+image_str ),
+          ( "/usr/bin/skopeo", "--override-os", "linux", "inspect", "--no-tags", "--no-creds", "docker://"+image_str ),
           stdout=subprocess.PIPE
         )
     popen.wait()
@@ -76,7 +76,7 @@ def get_container_watch_refs( input ):
         images = dict()
         for cont in containers:
             if  "sha256" in cont.image:
-                logger.error(f"Container {cont.name} in deployment {input.metadata.name} already using sha256 image-ref, You may need to manually set the watch-ref annotation")
+                logging.warning(f"Container {cont.name} in deployment {input.metadata.name} already using sha256 image-ref, You may need to manually set the watch-ref annotation")
                 continue
             images[cont.name] = cont.image
         return images
@@ -244,6 +244,16 @@ def annotation_enable_chk(d):
 
 #when we add more watches https://engineering.bitnami.com/articles/kubernetes-async-watches.html
 def start_controller():
+    print("Contoller started")
+    logging.info("Contoller started")
+    #HACK: This task just readds its self to the queue to stop the schedular getting empty
+    def dummy():
+        scheduler.enter( 10, 10, dummy  )
+    dummy()
+
+    sched_thread = threading.Thread(target=scheduler.run, daemon=True)
+    sched_thread.start()
+
     api_client = client.AppsV1Api()
 
     w = watch.Watch()
@@ -267,7 +277,7 @@ def start_controller():
 
 
 def stop_controller():
-    logger.warn("No longer the leader")
+    logging.warning("No longer the leader")
     sys.exit(1)
 
 def main():
@@ -277,29 +287,23 @@ def main():
     # --in-cluster = use svc account and in cluster env config.
 
     #Use Service Account
-    #config.load_incluster_config()
-    config.load_config()
+    config.load_incluster_config()
+    #config.load_config()
 
-    #Leader election
-    # candidate_id = uuid.uuid4()
-    # lock_namespace = "image-updater-operator" #TODO: fix this - maybe arg/maybe api call (configmap/current svc acount ns)
-    # lock_name = "image-updater-operator-leader" #Could also be from a configmap/arg
+    # Leader election
+    candidate_id = uuid.uuid4()
+    lock_namespace = "image-updater-operator" #TODO: fix this - maybe arg/maybe api call (configmap/current svc acount ns)
+    lock_name = "image-updater-operator-leader" #Could also be from a configmap/arg
 
-    # leader = electionconfig.Config(ConfigMapLock(lock_name, lock_namespace, candidate_id), lease_duration=17,
-    #                            renew_deadline=11, retry_period=5, onstarted_leading=start_controller,
-    #                            onstopped_leading=stop_controller)
+    leader = electionconfig.Config(ConfigMapLock(lock_name, lock_namespace, candidate_id), lease_duration=60,
+                               renew_deadline=45, retry_period=30, onstarted_leading=start_controller,
+                               onstopped_leading=stop_controller)
 
-    # leaderelection.LeaderElection(leader).run()
 
-    #HACK: This task just readds its self to the queue to stop the schedular getting empty
-    def dummy():
-        scheduler.enter( 10, 10, dummy  )
-    dummy()
 
-    sched_thread = threading.Thread(target=scheduler.run, daemon=True)
-    sched_thread.start()
+    #start_controller()
+    leaderelection.LeaderElection(leader).run()
 
-    start_controller()
 
 
 if __name__ == '__main__':

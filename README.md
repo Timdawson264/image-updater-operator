@@ -22,7 +22,6 @@ image-updater.k8s.tdawson.co.nz/watch-ref: {
     }
 ```
 
-
 ### TODO:
 
 - Add helm chart to deploy, with service account + role bindings
