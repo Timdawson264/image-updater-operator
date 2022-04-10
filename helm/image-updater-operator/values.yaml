@@ -2,7 +2,7 @@
 replicaCount: 1
 
 image:
-  repository: registry.apps.nuc.k3s.tdawson.co.nz/image-updater/operator
+  repository: quay.io/tidawson/image-updater
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: latest

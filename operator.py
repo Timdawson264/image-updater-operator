@@ -105,7 +105,7 @@ def check_image_update( client, deploy ):
         new_img = watch_img.split(":")[0] + "@" + digest
         if new_img != cur_img:
             new_images[ cont ] = new_img
-            print( f"Container: {cont} Current Img:{cur_img} Updating to {new_img}" )
+            logging.info( f"Container: {cont} Current Img:{cur_img} Updating to {new_img}" )
     
     if len( new_images ) > 0 :
         cont_imgs = [ { "name": k, "image": v } for (k,v) in new_images.items() ]
@@ -160,7 +160,7 @@ def set_update_status_annotation( client, deploy ):
         }
         
     #TODO: wrap in try execpt
-    print( "Updating Last-Checked" )
+    logging.info( "Updating Last-Checked" )
     resp = client.AppsV1Api().patch_namespaced_deployment( 
             deploy_name, 
             deploy_ns, 
@@ -193,7 +193,7 @@ def get_last_check( deploy ):
 
 def get_and_reconsile( **args ):
 
-    print( f"Scheduled update ts: {time.time()} {args}")
+    logging.info( f"Scheduled update ts: {time.time()} {args}")
 
     if args["kind"] == "Deployment":
         #TODO: Catch exections from removed objeccts
@@ -220,7 +220,7 @@ def reconsile_add(obj):
     last = get_last_check( obj )
     now = int(time.time())
     period = get_check_period( obj )
-    print( f"time until update: { period - (now-last) }" ) 
+    logging.info( f"time until update: { period - (now-last) }" ) 
 
     if (now - last) >  period:
         #update status, aka last check time first, this means that any following update events contain the new time.
@@ -250,16 +250,22 @@ def start_controller():
     def dummy():
         scheduler.enter( 10, 10, dummy  )
     dummy()
+    #Handle the sched ending
+    def sched_runner():
+        try:
+            scheduler.run()
+        finally:
+            sys.exit(1)
 
-    sched_thread = threading.Thread(target=scheduler.run, daemon=True)
+
+    sched_thread = threading.Thread(target=sched_runner, daemon=True)
     sched_thread.start()
 
     api_client = client.AppsV1Api()
 
     w = watch.Watch()
     for event in w.stream(api_client.list_deployment_for_all_namespaces):
-        print("Event: %s %s %s" % (event['type'], event['object'].kind, event['object'].metadata.name))
-        #pprint( event )
+        logging.info("Event: %s %s %s" % (event['type'], event['object'].kind, event['object'].metadata.name))
         d = event['object']
         key = gen_key( event['object'] )
 
@@ -273,7 +279,8 @@ def start_controller():
         if event['type'] == "DELETED":
             remove_from_sched( d )
 
-    sys.exit("Watch failed")
+    logging.info("Watch ended")
+    sys.exit(1)
 
 
 def stop_controller():
