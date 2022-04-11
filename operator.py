@@ -16,6 +16,7 @@ import sched
 import time
 import threading
 import logging
+import _thread
 
 OP_NAME = "image-updater-operator"
 DEFAULT_PERIOD = int( 3600 )
@@ -255,8 +256,7 @@ def start_controller():
         try:
             scheduler.run()
         finally:
-            sys.exit(1)
-
+            _thread.interrupt_main()
 
     sched_thread = threading.Thread(target=sched_runner, daemon=True)
     sched_thread.start()
@@ -280,8 +280,9 @@ def start_controller():
             remove_from_sched( d )
 
     logging.info("Watch ended")
-    sys.exit(1)
-
+    #This is a daemon thread, so we need to interrupt main (the lease thread).
+    _thread.interrupt_main()
+     # os._exit - last resort
 
 def stop_controller():
     logging.warning("No longer the leader")
