@@ -16,7 +16,7 @@ import sched
 import time
 import threading
 import logging
-import _thread
+import os, _thread
 
 OP_NAME = "image-updater-operator"
 DEFAULT_PERIOD = int( 3600 )
@@ -29,6 +29,12 @@ scheduler = sched.scheduler(time.time, time.sleep)
 
 #key is gen_key output - used to find entry in schedular
 #watched_resources = dict()
+
+def die():
+    print("DIE() Unhandeled exception", file=sys.stderr)
+    _thread.interrupt_main()
+    time.sleep(5)
+    os._exit(1)
 
 def gen_key( input ):
         return  "key_" + input.kind + "_"+ input.metadata.namespace + "_" + input.metadata.name
@@ -237,56 +243,61 @@ def reconsile_add(obj):
         "key": gen_key( obj )
     }
 
-
-    scheduler.enter( period , 5, get_and_reconsile, (), args )
+    scheduler.enter( period , 5, get_and_reconsile, (), kwargs=args )
 
 def annotation_enable_chk(d):
     return annotation_enable in d.metadata.annotations and d.metadata.annotations[annotation_enable].lower() == "true"
 
+def dump_monitored_obj():
+    objs = list( filter(lambda d: "key" in d.kwargs, scheduler.queue) ) 
+    for o in objs:
+        info = o.kwargs
+        logging.info( f'Watching kind {info["kind"]} in namespace {info["namespace"]} {info["name"]}' )
+
+
 #when we add more watches https://engineering.bitnami.com/articles/kubernetes-async-watches.html
 def start_controller():
-    print("Contoller started")
     logging.info("Contoller started")
     #HACK: This task just readds its self to the queue to stop the schedular getting empty
     def dummy():
-        scheduler.enter( 10, 10, dummy  )
+        dump_monitored_obj()
+        scheduler.enter( 1800, 10, dummy  )
     dummy()
     #Handle the sched ending
     def sched_runner():
         try:
             scheduler.run()
         finally:
-            _thread.interrupt_main()
+           die()
 
-    sched_thread = threading.Thread(target=sched_runner, daemon=True)
-    sched_thread.start()
+    try:
+        sched_thread = threading.Thread(target=sched_runner, daemon=True)
+        sched_thread.start()
+        api_client = client.AppsV1Api()
 
-    api_client = client.AppsV1Api()
+        w = watch.Watch()
+        for event in w.stream(api_client.list_deployment_for_all_namespaces):
+            logging.info("Event: %s %s %s" % (event['type'], event['object'].kind, event['object'].metadata.name))
+            d = event['object']
+            key = gen_key( event['object'] )
 
-    w = watch.Watch()
-    for event in w.stream(api_client.list_deployment_for_all_namespaces):
-        logging.info("Event: %s %s %s" % (event['type'], event['object'].kind, event['object'].metadata.name))
-        d = event['object']
-        key = gen_key( event['object'] )
+            if annotation_enable_chk(d) and event['type'] == "ADDED":
+                reconsile_add( d )
 
-        if annotation_enable_chk(d) and event['type'] == "ADDED":
-            reconsile_add( d )
+            #Check if the Annotation was removed, attempt to remove from sched if not enabled.
+            if not annotation_enable_chk(d) and event['type'] == "MODIFIED":
+                remove_from_sched( d )
 
-        #Check if the Annotation was removed, attempt to remove from sched if not enabled.
-        if not annotation_enable_chk(d) and event['type'] == "MODIFIED":
-            remove_from_sched( d )
+            if event['type'] == "DELETED":
+                remove_from_sched( d )
 
-        if event['type'] == "DELETED":
-            remove_from_sched( d )
-
-    logging.info("Watch ended")
-    #This is a daemon thread, so we need to interrupt main (the lease thread).
-    _thread.interrupt_main()
-     # os._exit - last resort
+        logging.info("Watch ended")
+    finally:
+        die()
 
 def stop_controller():
     logging.warning("No longer the leader")
-    sys.exit(1)
+    os._exit(1)
 
 def main():
     #TODO: add some arg parseing 
@@ -295,8 +306,8 @@ def main():
     # --in-cluster = use svc account and in cluster env config.
 
     #Use Service Account
-    config.load_incluster_config()
-    #config.load_config()
+    #config.load_incluster_config()
+    config.load_config()
 
     # Leader election
     candidate_id = uuid.uuid4()
